@@ -13,7 +13,7 @@ let words = Array(CommandLine.arguments.dropFirst())
 /// a diagnosis; `agents` lists, sets up and installs AI agents; `skill` prints the skill;
 /// `--settings` (or, with no words, a double-click in Finder) opens the settings window; anything
 /// else is a command (see Commands). Only the first word counts, so a search may be for "setup".
-enum Mode { case serve, setup, check, agents, skill, version, settings, command, copy, checkMarkdown }
+enum Mode { case serve, setup, check, agents, skill, version, settings, command, copy, checkMarkdown, listJSON }
 
 let mode: Mode = {
     switch words.first {
@@ -26,6 +26,7 @@ let mode: Mode = {
     case "--settings": return .settings
     case "--copy-note": return .copy
     case "--check-markdown": return .checkMarkdown
+    case "--list-json": return .listJSON
     case nil:
         var info = stat()
         fstat(STDIN_FILENO, &info)
@@ -158,6 +159,34 @@ case .checkMarkdown:
             return differ.isEmpty ? 0 : 1
         } catch {
             print("Notes data:", error)
+            return 1
+        }
+    }
+
+case .listJSON:
+    // `--list-json [QUERY]`: one JSON object per line for editor pickers; every note newest first, or
+    // the notes that match QUERY, best first. Full titles and ids, which the text lists cut.
+    struct Row: Encodable { let id, title, folder, modified: String; let snippet: String? }
+    runThenExit {
+        let query = words.dropFirst().joined(separator: " ")
+        do {
+            let rows: [Row]
+            if query.isEmpty {
+                var notes = try store.notes(inFolders: nil).filter { !$0.locked }
+                NoteOrder.modified.sort(&notes)
+                rows = notes.map { Row(id: $0.id, title: $0.title, folder: $0.folderPath, modified: Output.minute($0.modified), snippet: nil) }
+            } else {
+                let hits = try store.search(query, matchAll: true, in: nil, modified: DateWindow(), created: DateWindow(), order: nil, limit: 100).hits
+                rows = hits.map { Row(id: $0.note.id, title: $0.note.title, folder: $0.note.folderPath, modified: Output.minute($0.note.modified), snippet: $0.snippet) }
+            }
+            let encoder = JSONEncoder()
+            for row in rows { print(String(decoding: try encoder.encode(row), as: UTF8.self)) }
+            return 0
+        } catch let error as NotesError {
+            FileHandle.standardError.write(Data((Output.explain(error) + "\n").utf8))
+            return 1
+        } catch {
+            FileHandle.standardError.write(Data("\(error)\n".utf8))
             return 1
         }
     }
